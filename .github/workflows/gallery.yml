@@ -1,0 +1,67 @@
+name: Галерея
+
+# PR карточки: проверка по CONTRIBUTING.md, ревью и Squash and merge (review.js); после слияния и на push в main — сайт на Pages.
+# pull_request_target: работает из main галереи с правом записи; код из PR не выполняется — файл карточки читается через API.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  pages: write
+  id-token: write
+  actions: read   # deploy-pages ищет артефакт сайта своего прогона
+
+concurrency:
+  group: gallery-${{ github.event.pull_request.number || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.review.outputs.merged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const review = require('./.github/scripts/review.js');
+            await review({ github, context, core });
+
+  pages:
+    needs: review
+    if: always() && (github.event_name != 'pull_request_target' || needs.review.outputs.merged == 'true')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy2.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - run: node .github/scripts/build-site.js
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      # список артефактов прогона иногда отстаёт от загрузки («No artifacts named github-pages», проба 23.11) — вторая попытка через 20 с
+      - id: deploy
+        continue-on-error: true
+        uses: actions/deploy-pages@v5
+      - if: steps.deploy.outcome == 'failure'
+        run: sleep 20
+      - id: deploy2
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
